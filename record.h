@@ -2,7 +2,9 @@
 
 struct record {
   unsigned long ms;
-  unsigned short pulse_count;
+  unsigned byte pulse_count;
+  unsigned short air_temp;
+  unsigned short water_temp;
 #ifdef __i386__
 } __attribute__((packed));
 #else
@@ -10,8 +12,8 @@ struct record {
 #endif
 
 struct records_header {
+  unsigned byte record_count;
   unsigned long rtc;
-  unsigned short record_count;
   unsigned short flags;
 #ifdef __i386__
 } __attribute__((packed));
