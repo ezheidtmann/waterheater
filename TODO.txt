@@ -1,0 +1,2 @@
+Use SDfat library instead of SD library -- can detect removal
+and re-insertion.
