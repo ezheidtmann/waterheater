@@ -35,6 +35,8 @@ int rising_edge_micros;
 int pulse_count;
 int s;
 
+const int SDpin = 10;
+
 struct record r;
 
 void setup() {
@@ -43,6 +45,7 @@ void setup() {
   digitalWrite(PIN_LED, HIGH);
 
   // TODO: add init code for the card reader
+
   pulse_count = 0;
 
   // Initialize in-memory data buffer
@@ -130,6 +133,33 @@ int analogReadSum7(int pin) {
 }
 
 bool sd_ready() {
+  static const int chipSelect = 10; // SS pin
+  static File* outputfile;
+  pinMode(SDpin, OUTPUT);
+
+  // TODO: improve this function to mount / re-mount an SD card
+  // as needed. Currently we can only do it once with SD library.
+
+  int phase = -1;
+  int success = 1;
+
+  while (success) {
+    phase++;
+    switch (phase) {
+      case 0:
+        success = SD.begin(chipSelect);
+        break;
+
+      case 1:
+        *outputfile = SD.open("log", O_WRITE | O_CREAT);
+        break;
+    }
+  }
+
+  if (!success) {
+    
+
+
   // TODO: ensure global 'outputfile' is set and ready. Return true/false.
   return false;
 }
