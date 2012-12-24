@@ -1,4 +1,3 @@
-
 // --- signal detection constants. unit is 7 * 0.0049 volts.
 // with amplifier, phototransistor signal is peaking at 2 volts.
 #define NOISE_CEILING 10 // signal falls below this value => trailing edge
@@ -30,6 +29,10 @@
 #define PIN_WATERTEMP       A1
 #define PIN_LED             13
 
+// --- Error codes
+#define ERROR_SD 0b00000001
+
+// Globals: microseconds, signal value, timing, pulse count, state
 int micros_now, val;
 int rising_edge_micros;
 int pulse_count;
@@ -102,14 +105,16 @@ void loop() {
       r.ms = rising_edge_micros;
       r.pulse_count = pulse_count;
       if (!buf_add(&r)) { // if buffer is full, write out the buffer
-        if (sd_ready()) {
+        File *outfile;
+        if (outfile = sd_ready()) {
           // TODO: light LED
           digitalWrite(PIN_LED, HIGH);
-          buf_write(outputfile);
+          buf_write(*outfile);
           digitalWrite(PIN_LED, LOW);
           // TODO: turn off LED
         }
         else { // SD not ready; set error flag and clear buffer
+          errno |= ERROR_SD;
           buf_write(NULL);
         }
         buf_add(&r);
@@ -118,8 +123,13 @@ void loop() {
       pulse_count = 0;
       break;
   }
+
+  error_flash(errno);
 }
 
+/**
+ * Read the specified analog pin 7 times and return the sum
+ */
 int analogReadSum7(int pin) {
   static int val;
   val = analogRead(pin);
@@ -132,6 +142,9 @@ int analogReadSum7(int pin) {
   return val;
 }
 
+/**
+ * Get pointer to output file, if it is available. NULL otherwise.
+ */
 bool sd_ready() {
   static const int chipSelect = 10; // SS pin
   static File* outputfile;
@@ -151,15 +164,44 @@ bool sd_ready() {
         break;
 
       case 1:
-        *outputfile = SD.open("log", O_WRITE | O_CREAT);
+        *outputfile = SD.open("logname.bin", O_WRITE | O_CREAT);
+        success = *outputfile ? true : false;
         break;
+
+      case 2:
+        return outputfile;
     }
   }
 
-  if (!success) {
-    
+  return NULL;
+}
 
+/**
+ * Force sync to card
+ */
+bool sd_sync() {
+  sd_ready()->flush();
+}
 
-  // TODO: ensure global 'outputfile' is set and ready. Return true/false.
-  return false;
+/**
+ * Flash error code(s)
+ *
+ * TODO: Figure out some kind of flash timing scheme for multiple codes
+ */
+void error_flash(byte errno) {
+  static last = 0;
+  static m;
+  const ledPin = 13;
+  if (!errno) { return; }
+
+  m = millis();
+  if (errno & ERROR_SD) {
+    if (m - last > 100) {
+      digitalWrite(PIN_LED, HIGH);
+    }
+    else if (m - last > 200) {
+      digitalWrite(PIN_LED, LOW);
+      last = m;
+    }
+  }
 }
