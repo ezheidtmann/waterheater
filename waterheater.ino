@@ -71,6 +71,7 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);
 
+  // Initialize RTC, SD, and zero pulse count
   RTC.begin();
   sd_ready();
   pulse_count = 0;
