@@ -11,10 +11,22 @@
 // about 5 ms before the next expected rising edge.
 #define PULSE_WAIT_MSEC     51
 
+// usecs to wait for next rising edge; if no pulse is found within this window,
+// we assume the pulse train is done.
 #define MAX_PULSE_SPACING 80000
 
-// TODO: improve to handle wrapping
-#define MICROS_SUB(a, b) ((a) - (b))
+// size of buffer, in number of records
+#define BUFFER_SIZE 100
+
+/**
+ * Compute a - b for unsigned long, with wrapping handling.
+ *
+ * If (a > b), then this is standard subtraction. Otherwise, a has wrapped
+ * but b has not. We compute differences from the edges and add.
+ */
+#define ULONG_SUB(a, b) \
+  ( (a) > (b) ? (a) - (b) : \
+    (0xffffffffffffffff - (b)) + (a) )
 
 // --- state machine states
 #define STATE_NONE     100 // between pulse groups
@@ -32,14 +44,27 @@
 // --- Error codes
 #define ERROR_SD 0b00000001
 
-// Globals: microseconds, signal value, timing, pulse count, state
-int micros_now, val;
-int rising_edge_micros;
-int pulse_count;
+#include <SD.h>
+#include <Wire.h>
+#include <RTClib.h>
+
+RTC_DS1307 RTC;
+
+// --- Globals
+// microseconds now, and last rising edge
+unsigned long secs_now, micros_now, rising_edge_micros;
+// number of pulses detected; current analogRead value
+int pulse_count, val;
+// current state machine state
 int s;
 
+// header
+struct records_header h;
+
+// chipSelect pin for SD library
 const int SDpin = 10;
 
+// current record for output file
 struct record r;
 
 void setup() {
@@ -47,13 +72,14 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);
 
-  // TODO: add init code for the card reader
-
+  RTC.begin();
+  sd_ready();
   pulse_count = 0;
 
   // Initialize in-memory data buffer
   buf_init(BUFFER_SIZE);
 
+  // Turn off LED
   digitalWrite(PIN_LED, LOW);
 }
 
@@ -63,7 +89,7 @@ void loop() {
 
   switch (s) {
     case STATE_IN_PULSE:
-      if (MICROS_SUB(micros_now, rising_edge_micros) > PULSE_CHECK_WIDTH) {
+      if (ULONG_SUB(micros_now, rising_edge_micros) > PULSE_CHECK_WIDTH) {
         // we know this pulse is real. save some cycles.
         pulse_count++;
         s = STATE_WAITING;
@@ -102,22 +128,30 @@ void loop() {
       break;
 
     case STATE_FINISHED: // finished with a pulse group. save a row.
+      if (!h.rtc) { // new header; initialize
+        h.rtc = RTC.now().unixtime();
+        h.micros = micros();
+      }
+
       r.ms = rising_edge_micros;
       r.pulse_count = pulse_count;
       if (!buf_add(&r)) { // if buffer is full, write out the buffer
         File *outfile;
         if (outfile = sd_ready()) {
-          // TODO: light LED
           digitalWrite(PIN_LED, HIGH);
-          buf_write(*outfile);
+
+          h.flags = 0; // TODO: save error flags here
+          buf_write(*outfile, &h);
+
           digitalWrite(PIN_LED, LOW);
-          // TODO: turn off LED
         }
         else { // SD not ready; set error flag and clear buffer
           errno |= ERROR_SD;
           buf_write(NULL);
         }
         buf_add(&r);
+
+        h.rtc = 0;
       }
 
       pulse_count = 0;
@@ -191,7 +225,7 @@ bool sd_sync() {
 void error_flash(byte errno) {
   static last = 0;
   static m;
-  const ledPin = 13;
+
   if (!errno) { return; }
 
   m = millis();

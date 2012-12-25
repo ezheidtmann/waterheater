@@ -14,6 +14,7 @@ struct record {
 struct records_header {
   unsigned byte record_count;
   unsigned long rtc;
+  unsigned long micros;
   unsigned short flags;
 #ifdef __i386__
 } __attribute__((packed));
