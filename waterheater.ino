@@ -18,16 +18,6 @@
 // size of buffer, in number of records
 #define BUFFER_SIZE 100
 
-/**
- * Compute a - b for unsigned long, with wrapping handling.
- *
- * If (a > b), then this is standard subtraction. Otherwise, a has wrapped
- * but b has not. We compute differences from the edges and add.
- */
-#define ULONG_SUB(a, b) \
-  ( (a) > (b) ? (a) - (b) : \
-    (0xffffffffffffffff - (b)) + (a) )
-
 // --- state machine states
 #define STATE_NONE     100 // between pulse groups
 #define STATE_WAITING  101 // waiting for another pulse in this group
@@ -41,7 +31,24 @@
 #define PIN_LED             13
 
 // --- Error codes
-#define ERROR_SD 0b00000001
+#define ERROR_SD            0b0001
+#define ERROR_SHORTPULSE    0b0010
+#define ERROR_TOOMANYPULSES 0b0100
+
+// errors particular to a row of data
+#define ERRORS_ROW (ERROR_TOOMANYPULSES | ERROR_SHORTPULSE)
+
+//////////////////////////////
+
+/**
+ * Compute a - b for unsigned long, with wrapping handling.
+ *
+ * If (a > b), then this is standard subtraction. Otherwise, a has wrapped
+ * but b has not. We compute differences from the edges and add.
+ */
+#define ULONG_SUB(a, b) \
+  ( (a) > (b) ? (a) - (b) : \
+    (0xffffffffffffffff - (b)) + (a) )
 
 #include <SD.h>
 #include <Wire.h>
@@ -107,7 +114,7 @@ void loop() {
         // TODO: set up error variable with available info, set error flag.
         // (then STATE_FINISHED will save the row)
         // AND delay a few seconds so i don't fill up the DB
-
+        errno |= ERROR_SHORTPULSE;
         s = STATE_FINISHED;
       }
       break;
@@ -136,16 +143,25 @@ void loop() {
         h.millis = millis();
       }
 
+      // check for too many pulses
+      if (pulse_count > 0b1111) {
+        errno |= ERROR_TOOMANYPULSES;
+      }
+
       r.millis      = rising_edge_millis;
-      r.pulse_count = pulse_count;
+      r.pulse_count = (pulse_count & 0b1111) | (errno << 4);
       r.air_temp    = analogReadSum7(PIN_AIRTEMP);
       r.water_temp  = analogReadSum7(PIN_WATERTEMP);
+
+      // unset row-based errors
+      errno &= ~ERRORS_ROW;
+
       if (!buf_add(&r)) { // if buffer is full, write out the buffer
         File *outfile;
         if (outfile = sd_ready()) {
           digitalWrite(PIN_LED, HIGH);
 
-          h.flags = 0; // TODO: save error flags here
+          h.flags = errno;
           buf_write(*outfile, &h);
 
           digitalWrite(PIN_LED, LOW);
