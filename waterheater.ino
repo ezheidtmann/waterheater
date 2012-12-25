@@ -34,8 +34,7 @@
 #define STATE_IN_PULSE 102 // inside a pulse
 #define STATE_FINISHED 103 // at end of pulse group, ready to save row
 
-// TODO: determine if A0 or 0 is appropriate for analogRead()
-// (online docs and example code differs)
+// --- pins
 #define PIN_PHOTOTRANSISTOR A0
 #define PIN_AIRTEMP         A2
 #define PIN_WATERTEMP       A1
@@ -128,13 +127,15 @@ void loop() {
       break;
 
     case STATE_FINISHED: // finished with a pulse group. save a row.
-      if (!h.rtc) { // new header; initialize
-        h.rtc = RTC.now().unixtime();
+      if (!h.rtc_secs) { // new header; initialize
+        h.rtc_secs = RTC.now().unixtime();
         h.micros = micros();
       }
 
-      r.ms = rising_edge_micros;
+      r.micros      = rising_edge_micros;
       r.pulse_count = pulse_count;
+      r.air_temp    = analogReadSum7(PIN_AIRTEMP);
+      r.water_temp  = analogReadSum7(PIN_WATERTEMP);
       if (!buf_add(&r)) { // if buffer is full, write out the buffer
         File *outfile;
         if (outfile = sd_ready()) {

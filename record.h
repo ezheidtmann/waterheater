@@ -1,7 +1,7 @@
 #define EZH_BAUD 115200
 
 struct record {
-  unsigned long ms;
+  unsigned long micros;
   unsigned byte pulse_count;
   unsigned short air_temp;
   unsigned short water_temp;
@@ -13,7 +13,7 @@ struct record {
 
 struct records_header {
   unsigned byte record_count;
-  unsigned long rtc;
+  unsigned long rtc_secs;
   unsigned long micros;
   unsigned short flags;
 #ifdef __i386__

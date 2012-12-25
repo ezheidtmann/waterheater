@@ -1,6 +1,6 @@
 /**
  Write the contents of the buffer to a file.
- 
+
  After writing, the buffer is reset to appear empty.
 */
 int buf_write(HardwareSerial output, struct records_header* h) {
