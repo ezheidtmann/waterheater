@@ -3,17 +3,17 @@
 #define NOISE_CEILING 10 // signal falls below this value => trailing edge
 #define SIGNAL_FLOOR 700 // signal rises above this value => rising edge
 
-// usecs required to be sure that a pulse is real
-#define PULSE_CHECK_WIDTH 4000
+// msecs required to be sure that a pulse is real
+#define PULSE_CHECK_WIDTH 4
 
 // msecs to sleep after detecting real pulse. typical time between rising edges
 // is 60 ms, so PULSE_WAIT_MSEC + PULSE_CHECK_WIDTH / 1000 = 55 ms, putting us
 // about 5 ms before the next expected rising edge.
 #define PULSE_WAIT_MSEC     51
 
-// usecs to wait for next rising edge; if no pulse is found within this window,
+// msecs to wait for next rising edge; if no pulse is found within this window,
 // we assume the pulse train is done.
-#define MAX_PULSE_SPACING 80000
+#define MAX_PULSE_SPACING 80
 
 // size of buffer, in number of records
 #define BUFFER_SIZE 100
@@ -50,12 +50,14 @@
 RTC_DS1307 RTC;
 
 // --- Globals
-// microseconds now, and last rising edge
-unsigned long secs_now, micros_now, rising_edge_micros;
+// milliseconds now, and last rising edge
+unsigned long secs_now, millis_now, rising_edge_millis;
 // number of pulses detected; current analogRead value
 int pulse_count, val;
 // current state machine state
 int s;
+// error flags
+byte errno;
 
 // header
 struct records_header h;
@@ -71,9 +73,11 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);
 
-  // Initialize RTC, SD, and zero pulse count
+  // Initialize RTC, SD
   RTC.begin();
   sd_ready();
+
+  errno = 0;
   pulse_count = 0;
 
   // Initialize in-memory data buffer
@@ -84,12 +88,12 @@ void setup() {
 }
 
 void loop() {
-  micros_now = micros();
+  millis_now = millis();
   val = analogReadSum7(PIN_PHOTOTRANSISTOR);
 
   switch (s) {
     case STATE_IN_PULSE:
-      if (ULONG_SUB(micros_now, rising_edge_micros) > PULSE_CHECK_WIDTH) {
+      if (ULONG_SUB(millis_now, rising_edge_millis) > PULSE_CHECK_WIDTH) {
         // we know this pulse is real. save some cycles.
         pulse_count++;
         s = STATE_WAITING;
@@ -109,7 +113,7 @@ void loop() {
       break;
 
     case STATE_WAITING:
-      if (MICROS_SUB(micros_now, rising_edge_micros) > MAX_PULSE_SPACING) {
+      if (MICROS_SUB(millis_now, rising_edge_millis) > MAX_PULSE_SPACING) {
         // Enough time has passed that we are sure we have passed the last
         // pulse. We are ready to save a row.
 
@@ -121,8 +125,7 @@ void loop() {
 
     case STATE_NONE:
       if (val > SIGNAL_FLOOR) { // entering pulse (rising edge)
-
-        rising_edge_micros = micros_now;
+        rising_edge_millis = millis_now;
         s = STATE_IN_PULSE;
       }
       break;
@@ -130,10 +133,10 @@ void loop() {
     case STATE_FINISHED: // finished with a pulse group. save a row.
       if (!h.rtc_secs) { // new header; initialize
         h.rtc_secs = RTC.now().unixtime();
-        h.micros = micros();
+        h.millis = millis();
       }
 
-      r.micros      = rising_edge_micros;
+      r.millis      = rising_edge_millis;
       r.pulse_count = pulse_count;
       r.air_temp    = analogReadSum7(PIN_AIRTEMP);
       r.water_temp  = analogReadSum7(PIN_WATERTEMP);
