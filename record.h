@@ -2,7 +2,7 @@
 
 struct record {
   unsigned long millis;
-  unsigned byte pulse_count;
+  unsigned char pulse_count;
   unsigned short air_temp;
   unsigned short water_temp;
 #ifdef __i386__
@@ -12,7 +12,7 @@ struct record {
 #endif
 
 struct records_header {
-  unsigned byte record_count;
+  unsigned char record_count;
   unsigned long rtc_secs;
   unsigned long millis;
   unsigned short flags;

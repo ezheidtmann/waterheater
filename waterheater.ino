@@ -15,6 +15,9 @@
 // we assume the pulse train is done.
 #define MAX_PULSE_SPACING 80
 
+// msecs to wait before reporting "no pulse train" (ROWERR_NOPULSE)
+#define MAX_PULSE_TRAIN_SPACING 60000
+
 // size of buffer, in number of records
 #define BUFFER_SIZE 100
 
@@ -23,6 +26,7 @@
 #define STATE_WAITING  101 // waiting for another pulse in this group
 #define STATE_IN_PULSE 102 // inside a pulse
 #define STATE_FINISHED 103 // at end of pulse group, ready to save row
+#define STATE_FLUSHING 104 // writing buffer to SD card
 
 // --- pins
 #define PIN_PHOTOTRANSISTOR A0
@@ -30,10 +34,13 @@
 #define PIN_WATERTEMP       A1
 #define PIN_LED             13
 
-// --- Error codes
-#define ERROR_SD            0b0001
-#define ERROR_SHORTPULSE    0b0010
-#define ERROR_TOOMANYPULSES 0b0100
+// --- Error codes 
+// per group
+#define ERR_SD               0b00000001
+// per row
+#define ROWERR_SHORTPULSE    0b0001
+#define ROWERR_TOOMANYPULSES 0b0010
+#define ROWERR_NOPULSE       0b0100
 
 // errors particular to a row of data
 #define ERRORS_ROW (ERROR_TOOMANYPULSES | ERROR_SHORTPULSE)
@@ -48,11 +55,13 @@
  */
 #define ULONG_SUB(a, b) \
   ( (a) > (b) ? (a) - (b) : \
-    (0xffffffffffffffff - (b)) + (a) )
+    (0xffffffUL - (b)) + (a) )
 
-#include <SD.h>
+#include <SdFat.h>
 #include <Wire.h>
 #include <RTClib.h>
+
+#include "record.h"
 
 RTC_DS1307 RTC;
 
@@ -64,7 +73,8 @@ int pulse_count, val;
 // current state machine state
 int s;
 // error flags
-byte errno;
+byte row_error;
+byte group_error;
 
 // header
 struct records_header h;
@@ -79,6 +89,8 @@ struct record r;
 volatile bool flush_requested;
 bool buffer_save_success;
 
+int buf_write(SdFile* output, struct records_header* = NULL);
+
 void setup() {
   // Initialize LED pin; turn on for boot
   pinMode(PIN_LED, OUTPUT);
@@ -88,15 +100,16 @@ void setup() {
   RTC.begin();
   sd_ready();
 
-  errno = 0;
-  pulse_count = 0;
-
   // Initialize in-memory data buffer
   buf_init(BUFFER_SIZE);
 
   // Set up flush button handler
   flush_requested = false;
   attachInterrupt(0, button_handler, LOW);
+  
+  row_error = 0;
+  group_error = 0;
+  pulse_count = 0;
 
   // Turn off LED
   digitalWrite(PIN_LED, LOW);
@@ -111,18 +124,24 @@ void loop() {
       if (ULONG_SUB(millis_now, rising_edge_millis) > PULSE_CHECK_WIDTH) {
         // we know this pulse is real. save some cycles.
         pulse_count++;
-        s = STATE_WAITING;
+        // check for too many pulses
+        if (pulse_count = 0b1111) {
+          row_error |= ROWERR_TOOMANYPULSES;
+          s = STATE_FINISHED;
+          break;
+        }
+
         // TODO: find out if this is actually saving power
         delay(PULSE_WAIT_MSEC);
-        break;
+        s = STATE_WAITING;
       }
-      if (val < NOISE_CEILING) { // leaving pulse (trailing edge)
+      else if (val < NOISE_CEILING) { // leaving pulse (trailing edge)
         // if we are detecting a trailing edge, this pulse is weird!
         // (our delay() above should skip well past the trailing edge)
         // TODO: set up error variable with available info, set error flag.
         // (then STATE_FINISHED will save the row)
         // AND delay a few seconds so i don't fill up the DB
-        errno |= ERROR_SHORTPULSE;
+        row_error |= ROWERR_SHORTPULSE;
         s = STATE_FINISHED;
       }
       break;
@@ -143,58 +162,56 @@ void loop() {
         rising_edge_millis = millis_now;
         s = STATE_IN_PULSE;
       }
-      else if (ULONG_SUB(millis_now, rising_edge_millis) > MAX_PULSE_WAIT) {
-
-        // TODO: set errno and go to finish
+      // Too much time has passed with no signal. Write a row to report this.
+      else if (ULONG_SUB(millis_now, rising_edge_millis) > MAX_PULSE_TRAIN_SPACING) {
+        row_error |= ROWERR_NOPULSE;
+        s = STATE_FINISHED;
       }
       else if (flush_requested) {
-        // TODO: flush now? how to get into FINISHED state without a row?
+        // N.B. We run the risk of missing a pulse. Low risk, but perhaps worth a check?
+        s = STATE_FLUSHING;
       }
       break;
 
     case STATE_FINISHED: // finished with a pulse group. save a row.
-      if (!h.rtc_secs) { // new header; initialize
-        h.rtc_secs = RTC.now().unixtime();
-        h.millis = millis();
-      }
-
-      // check for too many pulses
-      if (pulse_count > 0b1111) {
-        errno |= ERROR_TOOMANYPULSES;
-      }
-
       r.millis      = rising_edge_millis;
-      r.pulse_count = (pulse_count & 0b1111) | (errno << 4);
+      r.pulse_count = (pulse_count & 0b1111) | (row_error << 4);
       r.air_temp    = analogReadSum7(PIN_AIRTEMP);
       r.water_temp  = analogReadSum7(PIN_WATERTEMP);
 
-      // unset row-based errors
-      errno &= ~ERRORS_ROW;
-
       buf_add(&r);
-      if (buf_full() || flush_requested) {
-        File *outfile;
-        if (outfile = sd_ready()) {
-          digitalWrite(PIN_LED, HIGH);
-
-          h.flags = errno;
-          buf_write(*outfile, &h);
-
-          digitalWrite(PIN_LED, LOW);
-        }
-        else { // SD not ready; set error flag and clear buffer
-          errno |= ERROR_SD;
-          buf_write(NULL);
-        }
-
-        h.rtc = 0;
-      }
-
+      
+      row_error = 0;
       pulse_count = 0;
+
+      if (buf_full() || flush_requested) {
+        s = STATE_FLUSHING;
+      }
+      break;
+
+    case STATE_FLUSHING:
+      SdFile *outfile;
+      if (outfile = sd_ready()) {
+        digitalWrite(PIN_LED, HIGH);
+        
+        h.rtc_secs = RTC.now().unixtime();
+        h.millis = millis_now;
+        h.flags = group_error;
+        
+        buf_write(outfile, &h);
+
+        digitalWrite(PIN_LED, LOW);
+      }
+      else { // SD not ready; set error flag and clear buffer
+        group_error |= ERR_SD;
+        buf_write(NULL, NULL);
+      }
+      
+      s = STATE_NONE;
       break;
   }
 
-  error_flash(errno);
+  error_flash(group_error);
 }
 
 /**
@@ -215,10 +232,11 @@ int analogReadSum7(int pin) {
 /**
  * Get pointer to output file, if it is available. NULL otherwise.
  */
-bool sd_ready() {
+SdFile* sd_ready() {
   static const int chipSelect = 10; // SS pin
-  static File* outputfile;
+  static SdFile outputfile;
   pinMode(SDpin, OUTPUT);
+  static SdFat sd;
 
   // TODO: improve this function to mount / re-mount an SD card
   // as needed. Currently we can only do it once with SD library.
@@ -230,16 +248,16 @@ bool sd_ready() {
     phase++;
     switch (phase) {
       case 0:
-        success = SD.begin(chipSelect);
+        success = sd.begin(chipSelect);
         break;
 
       case 1:
-        *outputfile = SD.open("logname.bin", O_WRITE | O_CREAT);
-        success = *outputfile ? true : false;
+        // TODO: choose an appropriate output file name
+        success = outputfile.open("logname.bin", O_WRITE | O_CREAT);
         break;
 
       case 2:
-        return outputfile;
+        return &outputfile;
     }
   }
 
@@ -250,7 +268,7 @@ bool sd_ready() {
  * Force sync to card
  */
 bool sd_sync() {
-  sd_ready()->flush();
+  sd_ready()->sync();
 }
 
 /**
@@ -259,13 +277,13 @@ bool sd_sync() {
  * TODO: Figure out some kind of flash timing scheme for multiple codes
  */
 void error_flash(byte errno) {
-  static last = 0;
-  static m;
+  static unsigned long last = 0;
+  static unsigned long m;
 
   if (!errno) { return; }
 
   m = millis();
-  if (errno & ERROR_SD) {
+  if (errno & ERR_SD) {
     if (m - last > 100) {
       digitalWrite(PIN_LED, HIGH);
     }
@@ -276,6 +294,9 @@ void error_flash(byte errno) {
   }
 }
 
+/**
+ * Interrupt callback for button press
+ */
 void button_handler() {
   flush_requested = true;
 }

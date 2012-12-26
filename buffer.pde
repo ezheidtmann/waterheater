@@ -4,8 +4,10 @@
  Copy the contents of a record from `src' to `dst'.
 */
 void record_copy(struct record* src, struct record* dst) {
-   (*dst).ms = (*src).ms;
+   (*dst).millis = (*src).millis;
    (*dst).pulse_count = (*src).pulse_count;
+   (*dst).air_temp = (*src).air_temp;
+   (*dst).water_temp = (*src).water_temp;
 }
 
 /**
@@ -87,8 +89,8 @@ int buf_add(struct record* rec) {
  Determine if the buffer is full.
  */
 int buf_full() {
-  i = _buf(&buf, &len, 0, 0);
   struct record* buf;
   long i, len;
+  i = _buf(&buf, &len, 0, 0);
   return i >= len;
 }
