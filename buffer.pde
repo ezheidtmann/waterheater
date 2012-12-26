@@ -83,3 +83,12 @@ int buf_add(struct record* rec) {
   }
 }
 
+/**
+ Determine if the buffer is full.
+ */
+int buf_full() {
+  i = _buf(&buf, &len, 0, 0);
+  struct record* buf;
+  long i, len;
+  return i >= len;
+}

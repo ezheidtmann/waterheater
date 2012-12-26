@@ -75,6 +75,10 @@ const int SDpin = 10;
 // current record for output file
 struct record r;
 
+// button press flag
+volatile bool flush_requested;
+bool buffer_save_success;
+
 void setup() {
   // Initialize LED pin; turn on for boot
   pinMode(PIN_LED, OUTPUT);
@@ -89,6 +93,10 @@ void setup() {
 
   // Initialize in-memory data buffer
   buf_init(BUFFER_SIZE);
+
+  // Set up flush button handler
+  flush_requested = false;
+  attachInterrupt(0, button_handler, LOW);
 
   // Turn off LED
   digitalWrite(PIN_LED, LOW);
@@ -120,7 +128,7 @@ void loop() {
       break;
 
     case STATE_WAITING:
-      if (MICROS_SUB(millis_now, rising_edge_millis) > MAX_PULSE_SPACING) {
+      if (ULONG_SUB(millis_now, rising_edge_millis) > MAX_PULSE_SPACING) {
         // Enough time has passed that we are sure we have passed the last
         // pulse. We are ready to save a row.
 
@@ -134,6 +142,13 @@ void loop() {
       if (val > SIGNAL_FLOOR) { // entering pulse (rising edge)
         rising_edge_millis = millis_now;
         s = STATE_IN_PULSE;
+      }
+      else if (ULONG_SUB(millis_now, rising_edge_millis) > MAX_PULSE_WAIT) {
+
+        // TODO: set errno and go to finish
+      }
+      else if (flush_requested) {
+        // TODO: flush now? how to get into FINISHED state without a row?
       }
       break;
 
@@ -156,7 +171,8 @@ void loop() {
       // unset row-based errors
       errno &= ~ERRORS_ROW;
 
-      if (!buf_add(&r)) { // if buffer is full, write out the buffer
+      buf_add(&r);
+      if (buf_full() || flush_requested) {
         File *outfile;
         if (outfile = sd_ready()) {
           digitalWrite(PIN_LED, HIGH);
@@ -170,7 +186,6 @@ void loop() {
           errno |= ERROR_SD;
           buf_write(NULL);
         }
-        buf_add(&r);
 
         h.rtc = 0;
       }
@@ -259,4 +274,8 @@ void error_flash(byte errno) {
       last = m;
     }
   }
+}
+
+void button_handler() {
+  flush_requested = true;
 }
